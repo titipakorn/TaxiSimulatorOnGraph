@@ -46,6 +46,7 @@ class SpeedInfo:
 
         k1 = k1 % self.max_time
         k2 = k2 % self.max_time
+        
 
         # use linear interpolation.
         lerped_mean = self.speed_mean[:,k1] * (1 - r) + self.speed_mean[:,k2] * r
@@ -54,6 +55,6 @@ class SpeedInfo:
         for road in city.roads:
             road_index = road.speed_info_closest_road_index
             f = np.random.normal(lerped_mean[road_index], lerped_std[road_index])
-            f = max(f, 5)
-            f = min(f, 50)
+            f = max(f, 5) #at least 5
+            f = min(f, 50) #at most 50
             road.speed = f

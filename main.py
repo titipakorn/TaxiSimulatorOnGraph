@@ -77,11 +77,13 @@ def train(
             seed = seed + 1
             city.seed = seed
             # get policy from s_t
+            # get action
             policy = agent.get_policy(observations)
-            # apply policy to city and get observation/number of assigned order/missed order.
-            next_observations, assigned, missed = city.step(policy)
-            assigned_epoch += assigned
-            missed_epoch += missed
+            # apply action
+            # apply policy to city and get observation
+            next_observations= city.step(policy)
+            # assigned_epoch += assigned
+            # missed_epoch += missed
 
             # training
             agent.train(next_observations)
@@ -92,27 +94,27 @@ def train(
             if agent.do_epsilon_exploration:
                 city.epsilon = lerp(1, epsilon_min, (epoch * time_steps + i + 1) / (epochs * time_steps))
 
-            so_far_hit_rate = assigned_epoch / (assigned_epoch + missed_epoch + 1e-8)
-            if verbose:
-                print("hit rate so far: %.4f" % so_far_hit_rate)
+            # so_far_hit_rate = assigned_epoch / (assigned_epoch + missed_epoch + 1e-8)
+            # if verbose:
+            #     print("hit rate so far: %.4f" % so_far_hit_rate)
 
             # write log for every 10 time steps.
-            if i % 10 == 0 and write_log:
-                end_time = time.time()
-                elapses_time = end_time - start_time
-                s = time.strftime('%H:%M:%S', time.gmtime(elapses_time))
-                log_file.write('%d, %d, %s, %.4f\n' % (epoch, i, s, so_far_hit_rate))
-                log_file.flush()
-                if agent.debug_file:
-                    print("Example Q values", agent.q_values_saved, file=agent.debug_file)
-                    agent.debug_file.flush()
+            # if i % 10 == 0 and write_log:
+            #     end_time = time.time()
+            #     elapses_time = end_time - start_time
+            #     s = time.strftime('%H:%M:%S', time.gmtime(elapses_time))
+            #     log_file.write('%d, %d, %s, %.4f\n' % (epoch, i, s, so_far_hit_rate))
+            #     log_file.flush()
+            #     if agent.debug_file:
+            #         print("Example Q values", agent.q_values_saved, file=agent.debug_file)
+            #         agent.debug_file.flush()
 
         # train for one episode finished. write log.
-        end_time = time.time()
-        elapses_time = end_time - start_time
-        s = time.strftime('%H:%M:%S', time.gmtime(elapses_time))
-        if write_log:
-            log_file.write('Total %d, %s, %.4f\n' % (epoch, s, (assigned_epoch / (assigned_epoch + missed_epoch + 1e-8))))
+        # end_time = time.time()
+        # elapses_time = end_time - start_time
+        # s = time.strftime('%H:%M:%S', time.gmtime(elapses_time))
+        # if write_log:
+        #     log_file.write('Total %d, %s, %.4f\n' % (epoch, s, (assigned_epoch / (assigned_epoch + missed_epoch + 1e-8))))
 
     if log_file is not None:
         log_file.close()
@@ -290,27 +292,24 @@ def make_agent_from_params(city, **kwargs):
 
 
 def make_city_from_params(**kwargs):
+    
     osmnx_g = ox.load_graphml(kwargs["graph_data"])
-
     speed_info = SpeedInfo(kwargs["speed_info_data"])
     for edge in osmnx_g.edges(data=True):
         u, v, data = edge
         data['u'] = u
         data['v'] = v
-        data['speed_info_closest_road_index'] = speed_info.road_names_dict[data['speed_info_closest_road']]
+    #integrate avg_speed
     g = dgl.DGLGraph()
-    g.from_networkx(osmnx_g, edge_attrs=['length', 'u', 'v', 'speed_info_closest_road_index'])
+    g.from_networkx(osmnx_g, edge_attrs=['length', 'u', 'v', 'capacity', 'free_speed'])
     g_line = g.line_graph(shared=True)
 
-    driver_initializer = BootstrapDriverInitializer(kwargs["driver_initializer_data"])
-    call_generator = BootstrapCallGenerator(kwargs["call_generator_data"])
-    total_driver_number_per_time = TotalDriverCount(kwargs["total_driver_number_per_time_data"])
+    # driver_initializer = BootstrapDriverInitializer(kwargs["driver_initializer_data"])
+    # call_generator = BootstrapCallGenerator(kwargs["call_generator_data"])
+    # total_driver_number_per_time = TotalDriverCount(kwargs["total_driver_number_per_time_data"])
 
     city = City(
         G=g_line,
-        call_generator=call_generator,
-        driver_initializer=driver_initializer,
-        total_driver_number_per_time=total_driver_number_per_time,
         speed_info=speed_info,
         **kwargs
     )

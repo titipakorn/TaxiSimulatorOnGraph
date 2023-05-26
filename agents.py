@@ -60,7 +60,7 @@ class ProportionalAgent(Agent):
         self.strategy = strategy
 
     def get_policy(self, observations):
-        policies = [[] for _ in range(self.city.N)]
+        policies = [[] for _ in range(self.city.total_agent)]
         for road in self.city.roads:
             policy = np.zeros((len(road.reachable_roads, )))
             for i, road_index in enumerate(road.reachable_roads):
@@ -101,21 +101,22 @@ class DQNAgent(Agent):
         # reverse direction & add self loop
         newG = city.G.reverse()
         for node in newG.nodes():
-            newG.add_edge(node, node)
+            newG.add_edges(node, node)
+        newG = newG.to('cuda:0')
         self.strategy = strategy
 
         city.consider_speed = consider_speed
 
         if model_type == 'gcn':
             self.model = GCN(newG,
-                             in_feats=3 if city.consider_speed else 2,
+                             in_feats=2,
                              n_hidden=8,
                              n_classes=1,
                              n_layers=4,
                              activation=F.relu)
         else:
             self.model = GAT(newG,
-                             in_dim=3 if city.consider_speed else 2,
+                             in_dim=2,
                              num_hidden=8,
                              num_classes=1,
                              num_layers=4,
@@ -139,9 +140,9 @@ class DQNAgent(Agent):
         self.q_values = None
 
         # sigma pi(s,t) Q(s,t)
-        self.next_target_expected_return_values = torch.zeros((self.city.N,)).cuda()
+        self.next_target_expected_return_values = torch.zeros((self.city.total_agent,)).cuda()
         # for memoization
-        self.next_target_expected_return_values_valid = np.zeros((self.city.N,), dtype=np.int32)
+        self.next_target_expected_return_values_valid = np.zeros((self.city.total_agent,), dtype=np.int32)
         self.policy_pow = policy_pow
         self.do_epsilon_exploration = kwargs.get("do_epsilon_exploration", True)
         self.temperature = temperature
@@ -172,54 +173,37 @@ class DQNAgent(Agent):
 
         with torch.no_grad():
             # update target for Q_V(s, t)
-            target_q_values = torch.zeros(self.city.N, 1).cuda()
-            target_q_values_counts = torch.zeros(self.city.N, 1).cuda()
+            target_q_values = torch.zeros(self.city.total_agent, 1).cuda()
+            target_q_values_counts = torch.zeros(self.city.total_agent, 1).cuda()
 
             # Q_V(s, t+1) = f(s_{t+1})
-            next_observations = next_observations.cuda()
+            # next_observations = next_observations.cuda()
             next_target_q_values = self.target_model(next_observations)
 
             # for memoization
             self.next_target_expected_return_values_valid.fill(-1)
 
-            total_agents = self.city.actionable_drivers + self.city.non_actionable_drivers
-            for driver in total_agents:
+            for index,driver in enumerate(self.city.drivers):
                 # got reward this turn
-                if driver.current_serving_call is not None:
-                    target_q_values[driver.road_index] += driver.current_serving_call.price
-                    target_q_values_counts[driver.road_index] += 1
-                else:
-                    road = self.city.roads[driver.road_index]
-                    neighbors = self.city.roads[driver.road_index].reachable_roads
+                # if not driver.is_online():
+                #     target_q_values[index] = 0 #should stay 
+                # else:
+                if driver.is_online():
+                    # pi(s, t+1)
+                    next_target_policy = self.get_policy_from_action_values(next_target_q_values[[index]].squeeze())
 
-                    # (1) controllable agents
-                    if driver.road_position + road.speed * self.city.city_time_unit_in_minute > road.length and len(neighbors) > 1:
-                        # (a) never calculated before
-                        if self.next_target_expected_return_values_valid[driver.road_index] == -1:
-                            # pi(s, t+1)
-                            next_target_policy = self.get_policy_from_action_values(next_target_q_values[neighbors].squeeze())
+                    # sigma pi(s,t+1) Q(s,t+1)
+                    next_q_values = next_target_q_values[[index]].squeeze()
 
-                            # sigma pi(s,t+1) Q(s,t+1)
-                            next_q_values = next_target_q_values[neighbors].squeeze()
-
-                            if self.strategy == POLICY_ENTROPY:
-                                m = self.temperature * torch.log(torch.sum(torch.exp(next_q_values / self.temperature)))
-                            else:
-                                m = torch.dot(next_q_values, next_target_policy)
-
-                            # set result and memorize it.
-                            self.next_target_expected_return_values[driver.road_index] = m
-                            self.next_target_expected_return_values_valid[driver.road_index] = 1
-                        # (b) just return previously calculated value.
-                        else:
-                            m = self.next_target_expected_return_values[driver.road_index]
-
-                    # (2) non-controllable agents
+                    if self.strategy == POLICY_ENTROPY:
+                        m = self.temperature * torch.log(torch.sum(torch.exp(next_q_values / self.temperature)))
                     else:
-                        m = next_target_q_values[driver.road_index]
+                        m = torch.dot(next_q_values, next_target_policy)
+                    
+                    target_q_values[index] += self.gamma * m   # gamma = 0.9
+                    target_q_values_counts[index] += 1
 
-                    target_q_values[driver.road_index] += self.gamma * m   # gamma = 0.9
-                    target_q_values_counts[driver.road_index] += 1
+     
 
             # For some roads, there are no drivers
             no_info = (target_q_values_counts == 0).int()
@@ -249,34 +233,26 @@ class DQNAgent(Agent):
         if self.city.city_time % 10 == 0 and debug:
             debug_target_q_values = target_q_values.squeeze().cpu().tolist()
             debug_q_values = self.q_values.squeeze().cpu().tolist()
-            index = list(range(self.city.N))
+            index = list(range(self.city.total_agent))
             debug_q_values_info = list(zip(debug_target_q_values, debug_q_values, index))
             debug_q_values_info.sort(reverse=True, key=lambda x:x[0])
             print(debug_q_values_info[0:30])
             print(loss)
 
     def get_policy(self, observations, use_target_model=False, to_numpy=True):
-        policy = [None for _ in range(self.city.N)]
+        policy = [None for _ in range(self.city.total_agent)]
         model = self.model if not use_target_model else self.target_model
-
+        model = model.cuda()
         # Q_V(j, t) = f(s_t)
-        q_values = model(observations.cuda())
+        q_values = model(observations)
 
-        #if self.debug_file:
-            #self.q_values_saved = q_values[0:8]
-        #print("Example Q values", self.name, q_values[0:10])
-            #self.debug_file.flush()
-
-        for v in range(self.city.N):
-            out_nodes = self.city.roads[v].reachable_roads
-            if len(out_nodes) == 0:
-                policy[v] = [-1]
-            else:
-                possible_action_values = q_values[out_nodes].squeeze()
-                policy_v = self.get_policy_from_action_values(possible_action_values)
-                if to_numpy:
-                    policy_v = policy_v.cpu().detach().numpy()
-                policy[v] = policy_v
+        for index, driver in enumerate(self.city.drivers):
+            out_nodes = [index]
+            possible_action_values = q_values[out_nodes].squeeze()
+            policy_v = self.get_policy_from_action_values(possible_action_values)
+            if to_numpy:
+                policy_v = policy_v.cpu().detach().numpy()
+            policy[v] = policy_v
         self.q_values = q_values
         self.observations = observations
         return policy
